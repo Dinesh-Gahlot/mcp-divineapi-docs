@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "divineapi-docs-mcp"
-version = "1.0.0"
+version = "1.0.1"
 description = "Public read-only MCP server for the DivineAPI REST API documentation: endpoints, parameters, responses, auth rules, and examples."
 readme = "README.md"
 license = "MIT"
@@ -25,7 +25,10 @@ classifiers = [
     "Topic :: Documentation",
 ]
 dependencies = [
-    "mcp[cli]>=1.2.0",
+    # Pinned <2: mcp 2.x renamed FastMCP -> MCPServer and removed
+    # mcp.server.fastmcp, which this server imports. Unpinned, a rebuild
+    # installs 2.x and the container crashes on import. Prod runs 1.28.1.
+    "mcp[cli]>=1.2.0,<2",
     "httpx>=0.27.0",
     "pyjwt>=2.0.0",
 ]
