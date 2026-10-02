@@ -13,8 +13,17 @@ ERROR SEMANTICS (depends on the host)
     body: success=1 means ok, success=2 validation error, success=3 auth error (msg field explains).
   - Structured hosts astroapi-7, astroapi-8, pdf: return real HTTP 4xx with body
     {status:"error", error_code, code, error, message}. Common:
-      400 AUTHORIZATION_HEADER_MISSING (Authorization header missing / bad params)
-      401 AUTHORIZATION_INVALID       (api_key or Bearer token missing / invalid)
+      400 AUTHORIZATION_HEADER_MISSING (pdf: Authorization header missing)
+      400 ERROR (astroapi-8: the calculation failed or an endpoint-specific input check
+          failed; message failed, error says why)
+      401 AUTHORIZATION_INVALID       (api_key or Bearer token missing / invalid;
+          astroapi-8 returns this even when only the header is missing, and
+          astroapi-7 uses error_code AUTHORIZATION_MISSING for a missing key or header)
+      403 AUTHORIZATION_DENIED / SUBSCRIPTION_EXPIRED (astroapi-8: plan lacks this API
+          or the subscription has expired)
+      422 VALIDATION_ERROR (astroapi-7 and astroapi-8: a param is missing or invalid;
+          error.details maps each field to its message, e.g. place: This field is required.)
+      429 QUOTA_EXCEEDED (astroapi-8: usage limit reached)
 
 BIRTH (the 13 standard birth params; where a card says "params: BIRTH" send all 13)
   api_key={Your API Key}  full_name=Rahul Kumar  day=24  month=05  year=2023
@@ -34,10 +43,15 @@ HOROSCOPE SELECTORS (Horoscope and Tarot v2 API, host astroapi-5)
     yearly  -> year
   lan (2-letter language code, default en) is optional on these.
 
-HOUSE_SYSTEM (optional on Western chart endpoints, default P)
+HOUSE_SYSTEM (optional on Western chart endpoints, default P; send ONE uppercase letter)
   P=Placidus  K=Koch  O=Porphyry  R=Regiomontanus  C=Campanus  B=Alcabitius
-  A=Equal  E=Equal(=A)  W=Equal/whole-sign  N=Whole sign (Aries=1st)
-  M=Morinus  X=Axial/Meridian  T=Polich/Page (topocentric)
+  A=Equal (from Ascendant)  E=Equal (same as A)  D=Equal from MC  V=Vehlow equal
+  W=Whole sign  N=Whole sign (Aries=1st)  M=Morinus  X=Axial rotation/Meridian
+  T=Polich/Page (topocentric)  S=Sripati
+  These 16 letters are the full supported set, and the raw API takes letters only:
+  astroapi-4 rejects names such as placidus (success=2), and astroapi-8 does not
+  validate the field and silently computes Placidus for a value it does not know.
+  The SDKs and MCP servers also accept friendly names and map them to the letter.
 
 SDK INSTALLS
   Python:  pip install divineapi
@@ -55,7 +69,15 @@ FIELD FORMATS (get these right)
   - sec:    required on birth endpoints; send 0 if the second is unknown (omitting fails).
   - date:   separate day, month, year fields (zero-padded strings ok), not one date string.
   - sign:   a zodiac name for horoscopes (aries .. pisces); keep it lowercase.
-  - lan:    2-letter language code (en, hi, ...); optional, default en.
+  - lan:    language code; optional, default en. NOT always ISO. On astroapi-3
+            /indian-api/ endpoints (incl. every festival card) the only valid codes are
+            en, hi, bn, ma (Marathi), tm (Tamil), tl (Telugu), ml (Malayalam), kn (Kannada);
+            ISO mr, ta and te are rejected (success=2, "Please enter valid language").
+            PDF reports (pdf host): government-job-report and foreign-travel-settlement
+            take all 8 of these codes; other PDF reports take en and hi, or en only.
+            On the horoscope / tarot hosts ta means Filipino (Tagalog), not Tamil.
+  - weekday: civil (default, the weekday changes at midnight) or vedic (it changes at
+    sunrise). Only on cards that list weekday; it changes vaar / weekday.
 
 WHAT NOT TO DO (the common agent mistakes)
   - Do NOT send a calendar date where a keyword selector is expected
@@ -83,13 +105,22 @@ DOMAIN GOTCHAS (astrology-specific traps; get these right)
   - tzone is a plain decimal offset (5.5 = IST) and is NOT adjusted for DST. Send the
     real offset for the birth moment, never "+5:30" or a zone name.
   - Rahu and Ketu are the lunar nodes (shadow points), not planets. Endpoints that
-    take node_type accept the true vs mean node variants; choose one deliberately.
+    take node_type accept meannode (the default) or truenode; choose one deliberately.
+  - Festival endpoints (*-festivals and find-festival) return raw snake_case keys
+    (e.g. anant_chaturdashi). Send include_name=YES to add a readable name to each
+    festival, localised by lan (e.g. lan=hi). Default include_name=NO. Not yet applied
+    everywhere: makar_sankranti, pausha_purnima, shakambari_purnima and banada_ashtami
+    come back without name on english-calendar-festivals and date-specific-festivals,
+    and so does festival=makar_sankranti on find-festival.
+  - Shraavana festivals: call /indian-api/v3/shraavana-festivals. v2 is still served but
+    returns four single dates under a plural "dates" key; in v3 only shraavana_somvaar_vrat
+    and mangla_gauri_vrat use dates (one entry per Monday / Tuesday).
   - Horoscope timeframes are keyword selectors (today / current / prev / next),
     never calendar dates.
   - Two-person work (synastry, composite, match-making, couple reports) uses the
     p1_ / p2_ prefixed birth blocks; api_key is sent once, unprefixed.
-  - house_system (Western charts) defaults to Placidus; pass a friendly name or a
-    single letter (see HOUSE_SYSTEM above).
+  - house_system (Western charts) defaults to Placidus; send one uppercase letter
+    code (see HOUSE_SYSTEM above). Friendly names work only through the SDKs/MCP.
   - Legacy hosts (astroapi-1..5) return HTTP 200 even on an auth or validation
     error. Always check the body's success field (1 = ok, 2 = validation error, 3 = auth error); do not
     trust the HTTP status alone.
@@ -272,7 +303,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
   returns: sign, year, yearly_horoscope, special
 
 
-## Indian API (139 endpoints)
+## Indian API (140 endpoints)
 
 /indian-api/v1/antar-dasha-analysis  [astroapi-3.divineapi.com]
   Antar Dasha Analysis: Navigate the cycles of life with our Antar Dasha Analysis API, unraveling the dynamic planetary sub-periods that shape individual destinies within the realm of Indian Astrology.
@@ -321,7 +352,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v1/chandramasa-list  [astroapi-8.divineapi.com]
   Chandramasa List: The Chandramasa List API returns the Amanta and Purnimanta Chandramasa for each day of a given month and year, based on the provided geographic location and timezone.
-  params: api_key*, month* (05), year* (2023), lat* (28.6139), lon* (77.2090), tzone* (5.5), place (New Delhi)
+  params: api_key*, month* (05), year* (2023), lat* (28.6139), lon* (77.2090), tzone* (5.5), place* (New Delhi)
   returns: [list of: date, chandramasa]
 
 /indian-api/v1/composite-friendship  [astroapi-3.divineapi.com]
@@ -331,12 +362,12 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v1/date-specific-festivals  [astroapi-3.divineapi.com]
   Date Specific Festivals: The Date Specific Festivals API allows you to fetch all festivals occurring on a specific Gregorian date, providing their corresponding Panchang and cultural details, including
-  params: api_key*, year* (2023), month* (12), day* (09), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
-  returns: [list]
+  params: api_key*, year* (2023), month* (12), day* (22), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
+  returns: mokhada_ekadashi, gita_jayanti
 
 /indian-api/v1/english-calendar-festivals  [astroapi-3.divineapi.com]
   English Calendar Specific: The English Calendar Specific Festivals API allows you to fetch all festival details for a given Gregorian (English) month and year, mapped to the Panchang-based festival data returned by DivineAPI.
-  params: api_key*, year* (2023), month* (12), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2023), month* (12), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: kalabhairav_jayanti, utpanna_ekadashi, pradosha_vrat, vivah_panchanmi, mokhada_ekadashi, gita_jayanti, dattatreya_jayanti, maa_annapurna_jayanti
 
 /indian-api/v1/find-choghadiya  [astroapi-2.divineapi.com]
@@ -346,7 +377,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v1/find-festival  [astroapi-3.divineapi.com]
   Festival Specific: Returns the observance dates and a festival image for a specific named Hindu festival.
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), festival* (shraavana_somvaar_vrat)
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), festival* (shraavana_somvaar_vrat), lan (en), include_name (NO)
   returns: dates, image
 
 /indian-api/v1/find-gowri-panchangam  [astroapi-3.divineapi.com]
@@ -385,8 +416,8 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
   returns: moon_sign, month, tithi, vaar, nakshatra, yoga, karana
 
 /indian-api/v1/horoscope-chart/D1  [astroapi-3.divineapi.com]
-  Horoscope Charts: Visualize cosmic influences with the “Horoscope Charts” API, which generates detailed astrological charts (D1, divisional charts, cuspal, Chalit, Sun/Moon charts, etc.) based on The chart id is the final path segment (shown here as D1); valid chart ids: D1, D2, D3, D4, D5, D7, D9, D10, D12, D16, D20, D24, D27, D30, D40, D45, D60, plus chalit, SUN, MOON and cuspal. D6, D8, D11 and numeric ids are not supported.
-  params: BIRTH, lan (en), show_planet_degree* (1), show_planet_retro* (1), show_modern_planets* (1), planet_color* (#333333), sign_color* (#333333), line_color* (#333333), chart_color* (#ffffff), chart_type* (south)
+  Horoscope Charts: Visualize cosmic influences with the “Horoscope Charts” API, which generates detailed astrological charts (D1, divisional charts, cuspal, Chalit, Sun/Moon charts, etc.) based on The chart id is the final path segment (shown here as D1); valid chart ids: D1, D2, D3, D4, D5, D6, D7, D8, D9, D10, D11, D12, D16, D20, D24, D27, D30, D40, D45, D60, plus chalit, SUN, MOON and cuspal. Chart ids are case-sensitive (D9, not d9). Numeric ids are not supported.
+  params: BIRTH, lan (en), node_type (meannode), show_planet_degree* (1), show_planet_retro* (1), show_modern_planets* (1), planet_color* (#333333), sign_color* (#333333), line_color* (#333333), chart_color* (#ffffff), chart_type* (south)
   returns: svg, data, base64_image
 
 /indian-api/v1/inauspicious-timings  [astroapi-3.divineapi.com]
@@ -401,7 +432,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v1/jaimini-astrology/karakamsha-lagna  [astroapi-3.divineapi.com]
   Karakamsha Lagna: The Jaimini Astrology Karakamsha Lagna API returns the Karakamsha-based chart (derived from the Atmakaraka in the Navamsha) and places the relevant planets in a Jaimini-style diamond chart.
-  params: BIRTH, lan (en)
+  params: BIRTH, lan (en), node_type (meannode)
   returns: svg, base64_image
 
 /indian-api/v1/jaimini-astrology/padas  [astroapi-3.divineapi.com]
@@ -416,7 +447,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v1/kaal-sarpa-yoga  [astroapi-3.divineapi.com]
   Kaal Sarpa Dosha: Understand the cosmic entwinement with our Kaal Sarpa Dosha API, shedding light on the astrological condition that arises from planetary alignments within the context of Indian Astrology.
-  params: BIRTH, lan (en)
+  params: BIRTH, lan (en), node_type (meannode)
   returns: result, intensity, name, direction, remedies
 
 /indian-api/v1/kp/cuspal-sub  [astroapi-3.divineapi.com]
@@ -426,12 +457,12 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v1/kp/planetary-cuspal-significator-table  [astroapi-3.divineapi.com]
   KP Astrology - Planetary and Cuspal Significator Table: This API returns house-wise cuspal details including sign, nakshatra lord, and sub lord along with a planet-wise significator table.
-  params: BIRTH, lan (en)
+  params: BIRTH, lan (en), node_type (meannode)
   returns: column, significator_table
 
 /indian-api/v1/kp/planetary-sub  [astroapi-3.divineapi.com]
   KP Astrology - Planetary Sub: KP Planetary Sub API returns structured planetary data including sign placement, house ownership, nakshatra lords, sub lords, and sub-sub lords.
-  params: BIRTH, lan (en)
+  params: BIRTH, lan (en), node_type (meannode)
   returns: table_data
 
 /indian-api/v1/kundli-transit/ascendant  [astroapi-3.divineapi.com]
@@ -531,7 +562,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v1/malayalam-festivals  [astroapi-3.divineapi.com]
   Malayalam Festivals: Returns the dates of major Malayalam calendar festivals such as Vishu, Thrissur Pooram, and Attukal Pongala for a given year.
-  params: api_key*, year* (2027), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2027), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, vishu_kani, thrissur_pooram, attukal_pongala, makara_vilakku, malayalam_new_year, ashtami_rohini, onam, ganesha_chaturthi, vidyarambham, mandalakala_begins, guruvayur_ekadashi, mandala_pooja
 
 /indian-api/v1/matching/horoscope-chart/D1  [astroapi-3.divineapi.com]
@@ -546,22 +577,22 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v1/month-nakshatra-list  [astroapi-8.divineapi.com]
   Month Nakshatra List: The Month Nakshatra List API provides day-wise Moon Nakshatra information for an entire month based on the selected location.
-  params: api_key*, month* (05), year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, month* (05), year* (2023), place* (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
   returns: nakshatra_list, sign_list
 
 /indian-api/v1/month-sunrise-sunset-list  [astroapi-8.divineapi.com]
   Month Sunrise-Sunset List: The Month Sunrise-Sunset List API provides day-wise sunrise and sunset timings for an entire month based on geographic location.
-  params: api_key*, month* (05), year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, month* (05), year* (2023), place* (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
   returns: [list of: date, sunrise, sunset]
 
 /indian-api/v1/month-surya-nakshatra-list  [astroapi-8.divineapi.com]
   Month Surya Nakshatra List: Returns the Sun's Nakshatra (Surya Nakshatra) for a given month, listing the Sun's constellation transitions with their dates.
-  params: api_key*, month* (05), year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, month* (05), year* (2023), place* (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
   returns: [list of: nakshatra_no, nakshatra, start_time, end_time]
 
 /indian-api/v1/month-tithi-list  [astroapi-8.divineapi.com]
   Month Tithi List: The Month Tithi List API returns day-wise Tithi details for an entire month based on the selected location.
-  params: api_key*, month* (05), year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, month* (05), year* (2023), place* (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
   returns: [list of: tithi_no, tithi, paksha, start_time, end_time]
 
 /indian-api/v1/muhurat/business-start  [astroapi-3.divineapi.com]
@@ -641,7 +672,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v1/sankranti-festivals  [astroapi-3.divineapi.com]
   Sankranti Festivals: Get the twelve solar Sankranti transitions for any year and location, each with its date, exact transition moment and the auspicious Punya Kala and Maha Punya Kala windows, plus
-  params: api_key*, year* (2027), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2027), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, makar_sankranti, kumbha_sankranti, meena_sankranti, mesha_sankranti, vrishabha_sankranti, mithuna_sankranti, karka_sankranti, simha_sankranti, kanya_sankranti, tula_sankranti, vrishchika_sankranti, dhanu_sankranti, uttarayana, lohri, bhogi_pandigai, pongal, makara_vilakku, magh_bihu, vaisakhi, ...
 
 /indian-api/v1/shani-ashtam-shani  [astroapi-3.divineapi.com]
@@ -659,9 +690,14 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
   params: BIRTH, lan (en)
   returns: svg, base64_image
 
+/indian-api/v1/swamsa-chart  [astroapi-3.divineapi.com]
+  Swamsa Chart: The Swamsa Chart API returns the Swamsa (Swamsha, Swansh Kundali) chart used in Jaimini astrology. It finds the Atmakaraka (the classical planet, Sun to Saturn, with the highest degree within its sign), takes that planet's sign in the Navamsa (D9) chart as the Swamsa lagna, and recasts the D9 planets into houses counted from it. Unlike Karakamsha Lagna, which places the birth chart (D1) planets around that sign, Swamsa places the D9 planets. Returns the atmakaraka, the Swamsa sign, the Navamsa lagna (lagnamsha) sign and the chart as SVG and as a base64 image.
+  params: BIRTH, lan (en), node_type (meannode)
+  returns: atmakaraka, swamsha_sign_no, swamsha_sign, lagnamsha_sign_no, lagnamsha_sign, svg, base64_image
+
 /indian-api/v1/tamil-festivals  [astroapi-3.divineapi.com]
   Tamil Festivals: Returns the dates of major Tamil calendar festivals such as Pongal, Puthandu, and Karthigai Deepam for a given year.
-  params: api_key*, year* (2027), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2027), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, thai_pongal, puthandu, tamil_deepavali, kedar_gauri_vrat, karthigai_deepam, soorasamharam, panguni_uthiram, vaikuntha_ekadashi, vaikasi_visakam, thai_pusam, karadaiyan_nombu, masi_magam, hanumath_jayanthi, arudra_darshan, avani_avittam, chitra_pournami
 
 /indian-api/v1/vargottama-planets  [astroapi-3.divineapi.com]
@@ -671,11 +707,11 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v1/varshphal/basic-astro-details  [astroapi-3.divineapi.com]
   Varshphal Basic Astro Details API: *The Varshphal Basic Astro Details API returns the core astrological details of the annual (Varshphal) chart for the chosen year, calculated at the moment of solar return.* --- Varshphal Basic Astro Details API ================================= The **Varshphal Basic Astro Details API** is part of the Varshphal (annual horoscope) suite and returns t
-  params: BIRTH, varshphal_year* (2024), lan (en)
+  params: BIRTH, varshphal_year* (2024), lan (en), weekday (civil)
   returns: full_name, date, year, month, day, hour, minute, gender, place, latitude, longitude, timezone, sunrise, sunset, tithi, paksha, paya, sunsign, moonsign, chandramasa, ...
 
 /indian-api/v1/varshphal/horoscope-chart/D1  [astroapi-3.divineapi.com]
-  Varshphal Horoscope Chart API: *The Varshphal Horoscope Chart API returns a divisional chart of the annual (Varshphal) horoscope as an SVG image, for the chosen year and the requested chart id (D1 to D60).* --- Varshphal Horoscope Chart API ============================= The **Varshphal Horoscope Chart API** is part of the Varshphal (annual horoscope) suite and returns a division The chart id is the final path segment (shown here as D1); valid chart ids: D1 to D60.
+  Varshphal Horoscope Chart API: *The Varshphal Horoscope Chart API returns a divisional chart of the annual (Varshphal) horoscope as an SVG image, for the chosen year and the requested chart id.* --- Varshphal Horoscope Chart API ============================= The **Varshphal Horoscope Chart API** is part of the Varshphal (annual horoscope) suite and returns a division The chart id is the final path segment (shown here as D1); valid chart ids: D1, D2, D3, D4, D5, D6, D7, D8, D9, D10, D11, D12, D16, D20, D24, D27, D30, D40, D45, D60, plus chalit, SUN, MOON and cuspal. Chart ids are case-sensitive (D9, not d9). Numeric ids are not supported.
   params: BIRTH, varshphal_year* (2024), lan (en)
   returns: svg, data, base64_image
 
@@ -726,7 +762,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v1/varshphal/varsha-pravesh  [astroapi-3.divineapi.com]
   Varshphal Varsha Pravesh API: *The Varshphal Varsha Pravesh API returns the exact moment of solar return (Varsha Pravesh) when the annual chart for the chosen year begins, calculated from the birth details and the varshphal_year.* --- Varshphal Varsha Pravesh API ============================ The **Varshphal Varsha Pravesh API** is part of the Varshphal (annual horoscope) suite
-  params: BIRTH, varshphal_year* (2024), lan (en)
+  params: BIRTH, varshphal_year* (2024), lan (en), weekday (civil)
   returns: varshphal_year, age, varsha_pravesh, weekday
 
 /indian-api/v1/varshphal/yogas  [astroapi-3.divineapi.com]
@@ -751,7 +787,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v2/ashada-festivals  [astroapi-3.divineapi.com]
   Find Ashada Festivals: Immerse yourself in the spirit of Ashadha with the “Ashadha Festivals” API, unveiling the astrological and cultural charm of festivals that grace the Indian calendar within the Panchang context.
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, yogini_ekadashi, jagannath_rathyatra, devshayani_ekadashi, guru_purnima, gauri_vrat, jaya_parvati_vrat, kokila_vrat, pradosha_vrat
 
 /indian-api/v2/ashtakoot-milan  [astroapi-3.divineapi.com]
@@ -761,17 +797,17 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v2/ashvina-festivals  [astroapi-3.divineapi.com]
   Find Ashvina Festivals: This endpoint returns a detailed list of important festivals, vrats, pitru-related observances, Navaratri schedule, and Vijayadashami timings that occur in the Ashwin month as per the Hindu Panchang.
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, pitru_paksha, indira_ekadashi, pitru_amavasya, papankusha_ekadashi, jivit_putrika_vrat, sharad_purnima, upang_lalita_vrat, kojagara_puja, shardiya_navaratri, vijayadashami, kanya_pujan, pradosha_vrat
 
 /indian-api/v2/bhadrapada-festivals  [astroapi-3.divineapi.com]
   Find Bhadrapada Festivals: Embrace the essence of Bhadrapada with the “Bhadrapada Festivals” API, shedding light on the astrological and cultural festivities that enrich the Indian calendar within the Panchang domain.
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
-  returns: year, gayatri_japam, kajari_teej, aja_ekadashi, hartalika_teej, ganesh_chaturthi, rishi_panchami, radha_ashtami, parsva_ekadashi, anant_chaturdashi, ganesh_visarjan, vamana_jayanti, mahalaxmi_vrat, durva_ashtami, pradosha_vrat
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
+  returns: year, gayatri_japam, kajari_teej, aja_ekadashi, hartalika_teej, ganesh_chaturthi, rishi_panchami, radha_ashtami, parsva_ekadashi, anant_chaturdashi, ganesh_visarjan, vamana_jayanti, mahalaxmi_vrat, durva_ashtami, krishna_janmashtami, pradosha_vrat
 
 /indian-api/v2/chaitra-festivals  [astroapi-3.divineapi.com]
   Find Chaitra Festivals: The Chaitra Festivals API returns all major Hindu festivals, vrats, and observances that fall in the lunar month of Chaitra, based on the Panchang.
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, sheetla_ashtami, papamochani_ekadashi, rang_panchami, ugadi, gudi_padwa, gangaur, yamuna_chhath, ram_navami, kamada_ekadashi, hanuman_jayanti, chaitra_purnima, chaitra_navaratri, pradosha_vrat
 
 /indian-api/v2/chandramasa  [astroapi-3.divineapi.com]
@@ -830,23 +866,23 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
   returns: lucky_stone, life_stone, dasha_stone
 
 /indian-api/v2/grah-gochar/sun  [astroapi-3.divineapi.com]
-  Grah Gochar (Planet Transit API): The Grah Gochar (Planet Transit) API provides detailed planetary transit data, identifying when a planet moves from one zodiac sign to another. The planet is selected by the final path segment (shown here as sun); valid planets: sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune, pluto, rahu, ketu.
-  params: api_key*, month* (05), year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en)
+  Grah Gochar (Planet Transit API): The Grah Gochar (Planet Transit) API provides detailed planetary transit data, identifying when a planet moves from one zodiac sign to another. The planet is selected by the final path segment (shown here as sun); valid planets: sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune, pluto, rahu, ketu. For rahu and ketu (the lunar nodes) the optional node_type picks the mean node (meannode, the default) or the true node (truenode), and the response data also carries the node_type used.
+  params: api_key*, month* (05), year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), node_type (meannode)
   returns: total_transit, transit
 
 /indian-api/v2/jaimini-astrology/planetary-positions  [astroapi-3.divineapi.com]
   Planetary Positions: The Planetary Positions API provides planetary data for Jaimini Astrology, revealing the positions, degrees, nakshatras, and karakamsa significations of each planet and house.
-  params: BIRTH, lan (en)
+  params: BIRTH, lan (en), node_type (meannode)
   returns: [list of: name, name_lan, full_degree, sign, sign_no, longitude, house, nakshatra, nakshatra_pada, nakshatra_no, karakamsha, karakamsha_functionality]
 
 /indian-api/v2/jyeshtha-festivals  [astroapi-3.divineapi.com]
   Find Jyeshtha Festivals: Embrace the essence of Jyeshtha with the ‘Jyeshtha Festivals’ API, revealing the astrological and cultural tapestry of celebrations that adorn the Indian calendar within the Panchang realm.
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, narada_jayanti, apara_ekadashi, vat_savitri_vrat, shani_amavasya, ganga_dussehra, nirjala_ekadashi, vat_purnima_vrat, mahesh_navami, pradosha_vrat
 
 /indian-api/v2/kartika-festivals  [astroapi-3.divineapi.com]
   Find Kartika Festivals: Engage in the enchantment of Kartik with the “Kartik Festivals” API, spotlighting the astrological and cultural vibrancy of events that grace the Indian calendar within the Panchang spectrum.
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, karwa_chauth, ahoi_ashtami, rama_ekadashi, dhanteras, narak_chaturdashi, deepawali, goverdhan_puja, bhaiya_dooj, devutthani_ekadashi, chhath_puja, gopashtami, akshaya_navami, tulsi_vivah, pradosha_vrat
 
 /indian-api/v2/kp/cuspal  [astroapi-3.divineapi.com]
@@ -856,12 +892,12 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v2/kp/planetary-positions  [astroapi-3.divineapi.com]
   KP Planetary Positions: The KP Planetary Positions API provides detailed planetary data based on Krishnamurti Paddhati (KP) principles.
-  params: BIRTH, lan (en)
+  params: BIRTH, lan (en), node_type (meannode)
   returns: date, time, latitude, longitude, timezone, planets
 
 /indian-api/v2/magha-festivals  [astroapi-3.divineapi.com]
   Find Magha Festivals: Celebrate the essence of Magha Month with our Magha Festivals API, designed to deliver comprehensive details about the festivals, observances, and rituals that occur during the
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, shattila_ekadashi, jaya_ekadashi, sakata_chauth, vasant_panchami, ratha_saptami, bheeshma_ashtami, mauni_amavasya, pradosha_vrat
 
 /indian-api/v2/manglik-dosha  [astroapi-3.divineapi.com]
@@ -871,7 +907,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v2/margashirsh-festivals  [astroapi-3.divineapi.com]
   Find Margashirsh Festivals: This API returns details of all major festivals that occur in the Margashirsha month according to the Hindu Panchang, including event dates, parana timings, and associated festival images.
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, kalabhairav_jayanti, utpanna_ekadashi, vivah_panchanmi, mokhada_ekadashi, gita_jayanti, dattatreya_jayanti, maa_annapurna_jayanti, pradosha_vrat
 
 /indian-api/v2/matching/manglik-dosha  [astroapi-3.divineapi.com]
@@ -886,12 +922,12 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v2/pausha-festivals  [astroapi-3.divineapi.com]
   Find Pausha Festivals: Immerse in the spirit of Paush with the “Paush Festivals” API, illuminating the astrological and cultural significance of celebrations that embellish the Indian calendar within the Panchang framework.
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, saphala_ekadashi, pausha_putrida_ekadashi, banada_ashtami, shakambari_purnima, pausha_purnima, pradosha_vrat
 
 /indian-api/v2/phalguna-festivals  [astroapi-3.divineapi.com]
   Find Phalguna Festivals: It provides detailed information about the Hindu month of Phalguna, including major festivals, auspicious timings (muhurats), and ritual details.
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, vijaya_ekadashi, phulera_dooj, amalaki_ekadashi, maha_shivratri, holika_dahan, holi, pradosha_vrat
 
 /indian-api/v2/planet-analysis  [astroapi-3.divineapi.com]
@@ -900,34 +936,29 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
   returns: planet, sign, sign_no, house, longitude, lord, image, analysis
 
 /indian-api/v2/planet-combustion-transit/mars  [astroapi-3.divineapi.com]
-  Planets Combustion Transit: The Planets Combustion Transit API provides detailed insights into the combustion phases of planets - periods when a planet comes very close to the Sun, losing its apparent
-  params: api_key*, month* (11), year* (2025), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en)
+  Planets Combustion Transit: The Planets Combustion Transit API provides detailed insights into the combustion phases of planets - periods when a planet comes very close to the Sun, losing its apparent brightness and influence in Vedic astrology. The planet is selected by the final path segment (shown here as mars); valid planets: moon, mercury, venus, mars, jupiter, saturn, uranus, neptune, rahu, ketu. Sun and pluto are not supported by this endpoint. For rahu and ketu (the lunar nodes) the optional node_type picks the mean node (meannode, the default) or the true node (truenode), and the response data also carries the node_type used.
+  params: api_key*, month* (11), year* (2025), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), node_type (meannode)
   returns: total_transit, transit
 
 /indian-api/v2/planet-nakshatra-transit/sun  [astroapi-3.divineapi.com]
-  Planets Nakshatra Transit: The Planets Nakshatra Transit API provides detailed information on when a planet enters a specific Nakshatra or its individual Pada (quarter). The planet is selected by the final path segment (shown here as sun); valid planets: sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune, pluto. The nodes rahu and ketu are not currently supported by this endpoint (may be added later).
-  params: api_key*, month* (05), year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), pada_transit* (0)
+  Planets Nakshatra Transit: The Planets Nakshatra Transit API provides detailed information on when a planet enters a specific Nakshatra or its individual Pada (quarter). The planet is selected by the final path segment (shown here as sun); valid planets: sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune, pluto, rahu, ketu. For rahu and ketu (the lunar nodes) the optional node_type picks the mean node (meannode, the default) or the true node (truenode), and the response data also carries the node_type used.
+  params: api_key*, month* (05), year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), pada_transit* (0), node_type (meannode)
   returns: total_transit, transit
 
 /indian-api/v2/planet-retrograde-transit/mars  [astroapi-3.divineapi.com]
-  Planets Retrograde Transit: The Planets Retrograde Transit API provides astrologically significant retrograde and progressive (direct) dates for major planets. The planet is selected by the final path segment (shown here as mars); valid planets: mercury, venus, mars, jupiter, saturn, uranus, neptune, pluto. Sun, moon, rahu and ketu are not supported by this endpoint.
-  params: api_key*, month* (05), year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en)
+  Planets Retrograde Transit: The Planets Retrograde Transit API provides astrologically significant retrograde and progressive (direct) dates for major planets. The planet is selected by the final path segment (shown here as mars); valid planets: mercury, venus, mars, jupiter, saturn, uranus, neptune, pluto, rahu, ketu. Sun and moon are not supported by this endpoint. For rahu and ketu (the lunar nodes) the optional node_type picks the mean node (meannode, the default) or the true node (truenode), and the response data also carries the node_type used. The mean node is always retrograde, so meannode returns no retrograde or direct changes; use truenode to get the node stations.
+  params: api_key*, month* (05), year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), node_type (meannode)
   returns: total_transit, transit
 
 /indian-api/v2/planetary-positions  [astroapi-3.divineapi.com]
   Planetary Positions: Explore the dynamic dance of planets through our Planetary Positions API, providing real-time insights into the cosmic placements that influence astrological interpretations within
-  params: BIRTH, lan (en)
+  params: BIRTH, lan (en), node_type (meannode)
   returns: date, time, latitude, longitude, timezone, planets
 
 /indian-api/v2/shadbala  [astroapi-3.divineapi.com]
   Shadbala: The Shadbala API provides a comprehensive analysis of planetary strengths (Balas) in an individual's birth chart, as defined in Indian Vedic Astrology.
   params: BIRTH, lan (en)
   returns: sthana_bala, digbala, kaal_bala, naisargika_bala, chestha_bala, drik_bala, total_shadbala, shadbala_in_rupa, min_require, ratio, rank
-
-/indian-api/v2/shraavana-festivals  [astroapi-3.divineapi.com]
-  Find Shraavana Festivals: Indulge in the aura of Shravana with the “Shravana Festivals” API, uncovering the astrological and cultural splendor of festivals that adorn the Indian calendar within the Panchang framework.
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
-  returns: year, kamika_ekadashi, hariyaali_teej, naga_panchami, putrida_ekadashi, gayatri_jayanti, kalki_jayanti, hayagriva_jayanti, narali_purnima, sanskrit_divas, shraavana_maas, shraavana_somvaar_vrat, mangla_gauri_vrat, varalaxmi_vrat, raksha_bandhan, pradosha_vrat
 
 /indian-api/v2/sub-planet-positions  [astroapi-3.divineapi.com]
   Sub Planet Positions: Explore the dynamic dance of planets through our Sub Planet Positions API, providing real-time insights into the cosmic placements that influence astrological interpretations
@@ -941,7 +972,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v2/vaishakha-festivals  [astroapi-3.divineapi.com]
   Find Vaishakha Festivals: Partake in the richness of Vaishakha with the ‘Vaishakha Festivals’ API, illuminating the astrological and cultural significance of festivals that embellish the Indian calendar
-  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5)
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
   returns: year, varuthini_ekadashi, akshay_tritiya, parashuram_jayanti, ganga_saptami, sita_navami, mohini_ekadashi, narasimha_jayanti, buddha_purnima, kurma_jayanti, pradosha_vrat
 
 /indian-api/v2/yogas  [astroapi-3.divineapi.com]
@@ -956,7 +987,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /indian-api/v3/basic-astro-details  [astroapi-3.divineapi.com]
   Basic Astrological Details: Dive into the celestial realm with the “Basic Astrological Details” API, offering comprehensive insights into planetary positions, houses, and aspects based on the tenets of Indian Astrology.
-  params: BIRTH, lan (en)
+  params: BIRTH, lan (en), weekday (civil)
   returns: full_name, year, month, day, hour, minute, gender, place, latitude, longitude, timezone, sunrise, sunset, tithi, paksha, paya, sunsign, moonsign, rashi_akshar, chandramasa, ...
 
 /indian-api/v3/matching/basic-astro-details  [astroapi-3.divineapi.com]
@@ -969,12 +1000,17 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
   params: BIRTH, lan (en)
   returns: sadhesati_current_phase, sadhesati_life_analysis, small_panoti, moon_sign, remedies, content
 
+/indian-api/v3/shraavana-festivals  [astroapi-3.divineapi.com]
+  Find Shraavana Festivals: Indulge in the aura of Shravana with the “Shravana Festivals” API, uncovering the astrological and cultural splendor of festivals that adorn the Indian calendar within the Panchang framework. Version 3 returns hariyaali_teej, gayatri_jayanti, narali_purnima and sanskrit_divas with a single date under date (v2 used dates for them). shraavana_somvaar_vrat and mangla_gauri_vrat keep dates, an object with one entry per Monday or Tuesday of the month.
+  params: api_key*, year* (2023), place (New Delhi), lat* (28.6139), lon* (77.2090), tzone* (5.5), lan (en), include_name (NO)
+  returns: year, kamika_ekadashi, hariyaali_teej, naga_panchami, putrida_ekadashi, gayatri_jayanti, kalki_jayanti, hayagriva_jayanti, narali_purnima, sanskrit_divas, shraavana_maas, shraavana_somvaar_vrat, mangla_gauri_vrat, varalaxmi_vrat, raksha_bandhan, pradosha_vrat
 
-## Western API (57 endpoints)
+
+## Western API (58 endpoints)
 
 /western-api/v1/arabic-lots  [astroapi-8.divineapi.com]
   Arabic Lots: The Arabic Lots API returns calculated Arabic Parts (also known as Lots) for a natal chart, such as the Lot of Fortune, Spirit, Eros, Necessity, and others.
-  params: BIRTH, lan (en), house_system* (P)
+  params: BIRTH, lan (en), house_system (P)
   returns: [list of: name, full_degree, sign, sign_no, longitude, house, element, modality]
 
 /western-api/v1/aspect-patterns  [astroapi-8.divineapi.com]
@@ -984,32 +1020,32 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /western-api/v1/asteroid-positions  [astroapi-8.divineapi.com]
   Asteroid Positions: The Asteroid Positions API returns the calculated ecliptic positions of key asteroids and dwarf planets for a given birth data set.
-  params: BIRTH, lan (en), house_system* (P)
+  params: BIRTH, lan (en), house_system (P)
   returns: [list of: name, full_degree, sign, sign_no, longitude, house, element, modality]
 
 /western-api/v1/chart-shape  [astroapi-8.divineapi.com]
   Chart Shape: The Chart Shape API identifies the astrological chart pattern (chart shape) and returns an SVG representation that you can render directly in your UI.
-  params: BIRTH
+  params: BIRTH, no_house (0), planet_graphic_thickness (0), sign_graphic_thickness (0)
   returns: chart_shape, svg, base64_image
 
 /western-api/v1/composite/aspect-table  [astroapi-8.divineapi.com]
   Aspect Table: This API reveals detailed angular relationships and helps interpret compatibility, tension, and harmony in astrological synastry analysis.
-  params: api_key*, P1_BIRTH, lan (en), P2_BIRTH, house_system* (P)
+  params: api_key*, P1_BIRTH, lan (en), P2_BIRTH, house_system (P)
   returns: p1_p2_aspect, p2_p1_aspect, composite_aspects
 
 /western-api/v1/composite/house-cusps  [astroapi-8.divineapi.com]
   House Cusps: This API helps in understanding the combined astrological influence and house structure formed when two natal charts are merged, offering insights into relationship dynamics and shared life patterns.
-  params: api_key*, P1_BIRTH, lan (en), P2_BIRTH, house_system* (P)
+  params: api_key*, P1_BIRTH, lan (en), P2_BIRTH, house_system (P)
   returns: p1, p2, composite
 
 /western-api/v1/composite/natal-wheel-chart  [astroapi-8.divineapi.com]
   Natal Wheel Chart: Generates a composite natal wheel chart from two people's birth details, returning each person's chart plus the merged composite wheel.
-  params: api_key*, P1_BIRTH, lan (en), P2_BIRTH, house_system* (P)
+  params: api_key*, P1_BIRTH, lan (en), P2_BIRTH, house_system (P), hide_chart_name (NO), planet_graphic_thickness (0), sign_graphic_thickness (0)
   returns: p1, p2, composite
 
 /western-api/v1/composite/planetary-positions  [astroapi-8.divineapi.com]
   Planetary Positions: Explore the current celestial layout with Composite Planetary Positions, understanding the astrological influence of each planet.
-  params: api_key*, P1_BIRTH, lan (en), P2_BIRTH, house_system* (P)
+  params: api_key*, P1_BIRTH, lan (en), P2_BIRTH, house_system (P)
   returns: p1_planetary_positions, p2_planetary_positions, composite_planetary_positions
 
 /western-api/v1/declinations-parallels  [astroapi-8.divineapi.com]
@@ -1029,7 +1065,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /western-api/v1/fixed-stars-details  [astroapi-8.divineapi.com]
   Fixed Stars Details: The Fixed Stars API returns detailed positional and classification data for the fixed stars you request.
-  params: BIRTH, lan (en), house_system* (P), star_list* (Abhijit,Aboras,A3558)
+  params: BIRTH, lan (en), house_system (P), star_list* (Abhijit,Aboras,A3558)
   returns: [list of: name, full_degree, sign, sign_no, longitude, speed, is_retro, house, element, modality]
 
 /western-api/v1/fixed-stars-list  [astroapi-8.divineapi.com]
@@ -1039,12 +1075,12 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /western-api/v1/full-transit  [astroapi-8.divineapi.com]
   Full Transit: Understand complete planetary movements and their astrological effects using the Full Transit API, offering detailed insights for every major planetary influence in transit interpretation.
-  params: BIRTH, transit_day* (27), transit_month* (10), transit_year* (2025), transit_lat* (25.321684), transit_lon* (82.987289), transit_tzone* (5.5), transit_place* (New Delhi), transit_planet* (moon), aspect_orbs_type* (Fixed), aspect_orbs_value* (530), aspects_type* (ALL)
+  params: BIRTH, transit_day* (27), transit_month* (10), transit_year* (2025), transit_lat* (25.321684), transit_lon* (82.987289), transit_tzone* (5.5), transit_place* (New Delhi), transit_planet* (moon), aspect_orbs_type (FIXED), aspect_orbs_value (5_30), aspects_type (ALL)
   returns: transit
 
 /western-api/v1/house-cusps  [astroapi-4.divineapi.com]
   House Cusps: Delve into the beginnings of each astrological house with House Cusps, revealing the foundational aspects of your life sectors.
-  params: BIRTH, lan (en), house_system* (P)
+  params: BIRTH, lan (en), house_system (P)
   returns: houses, ascendant, midheaven, vertex
 
 /western-api/v1/moon-phase-calendar  [astroapi-4.divineapi.com]
@@ -1054,7 +1090,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /western-api/v1/natal-insights  [astroapi-4.divineapi.com]
   Natal Insights: The Natal Insights API provides a synthesized view of a native’s birth chart by summarizing element distribution, modality (modes) balance, and hemisphere dominance.
-  params: BIRTH, lan (en), house_system* (P)
+  params: BIRTH, lan (en), house_system (P)
   returns: elements, modes, hemisphere
 
 /western-api/v1/other-minor-bodies  [astroapi-8.divineapi.com]
@@ -1062,34 +1098,39 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
   params: BIRTH
   returns: [list of: name, full_degree, sign, sign_no, longitude, house, element, modality]
 
+/western-api/v1/persona-chart  [astroapi-8.divineapi.com]
+  Persona Chart: Casts a full chart for the exact moment (within the first year of life) that the transiting Sun reaches the natal degree of the chosen persona_planet - an advanced Western astrology technique for personal-development readings alongside standard natal charts. The search starts 1 day after birth and scans up to 366 days forward. persona_planet is one of sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune or pluto (case-insensitive); sun gives the one-year-later Solar Return chart.
+  params: BIRTH, persona_planet* (sun), lan (en), house_system (A), node_type (truenode), output_include (raw_data), hide_chart_name (NO), graphic_layout (INNER_V1_HOUSE_CUSPS_PLANETS_DEGREES_SIGNS), planet_icon (1), planet_glyphs (COLORED_SMALL), planet_graphic_thickness (0), sign_graphic_thickness (0), filter_effect (DEFAULT_THEME), element_color (DEFAULT_THEME), sign_element_air_color (#60a5fa), sign_element_fire_color (#f87171), sign_element_water_color (#38bdf8), sign_element_earth_color (#a3e635), show_planet_retro (0), planet_aspects (ASPECTS_INNER_CIRCLE), degrees_color (COLORED_BY_PLANET), sign_text_color (#333333), house_text_color (#333333), sign_background (#ffffff), house_background (#ffffff), aspect_background (#ffffff), main_background (#ffffff), lines_color (#333333), background (#ffffff), aspects_type (ALL), aspect_orbs_type (FIXED), aspect_orbs_value (5_30)
+  returns: persona_planet, persona_datetime, planetary_positions, house_cusps, aspect_table, persona_natal_aspect
+
 /western-api/v1/planet-combustion-transit  [astroapi-8.divineapi.com]
   Planet Combustion Transit: Analyze planetary combustion transits using the Western Astrology Transit API, returning combustion details for a selected planet based on month, location, and timezone.
-  params: api_key*, month* (11), year* (2025), place (New Delhi, India), lat* (28.7041), lon* (77.1025), tzone* (5.5), planet* (mars)
+  params: api_key*, month* (11), year* (2025), place* (New Delhi, India), lat* (28.7041), lon* (77.1025), tzone* (5.5), planet* (mars)
   returns: transit
 
 /western-api/v1/planet-retrograde-transit  [astroapi-8.divineapi.com]
   Planet Retrograde Transit: Analyze planetary retrograde transits using the Western Astrology Transit API, returning retrograde movement details for a selected planet based on month, location, and timezone.
-  params: api_key*, month* (11), year* (2025), place (New Delhi, India), lat* (28.7041), lon* (77.1025), tzone* (5.5), planet* (mars)
+  params: api_key*, month* (11), year* (2025), place* (New Delhi, India), lat* (28.7041), lon* (77.1025), tzone* (5.5), planet* (mars)
   returns: transit
 
 /western-api/v1/planet-return-details  [astroapi-8.divineapi.com]
   Planet Return Details: The Planet Returns Details API provides in-depth astrological data for a specific planetary return, using the return_key obtained from the Planet Returns List API.
-  params: BIRTH, return_key* (MOON_P_1798780620000), lan (en), return_year* (2024), return_lat* (19.0760), return_lon* (72.8774), return_tzone* (5.5), return_place* (Mumbai, Maharashtra, India), house_system* (P), planet* (moon)
+  params: BIRTH, return_key* (MOON_P_1798780620000), lan (en), return_year* (2024), return_lat* (19.0760), return_lon* (72.8774), return_tzone* (5.5), return_place* (Mumbai, Maharashtra, India), house_system (P), planet* (moon), hide_chart_name (NO), planet_graphic_thickness (0), sign_graphic_thickness (0)
   returns: planetary_positions, house_cusps, aspect_table, wheel_chart
 
 /western-api/v1/planet-returns-list  [astroapi-8.divineapi.com]
   Planet Return List: The Planet Returns List API provides a list of exact planetary return dates for a given planet within a specified year.
-  params: BIRTH, lan (en), return_year* (2024), return_lat* (19.0760), return_lon* (72.8774), return_tzone* (5.5), return_place* (Mumbai, Maharashtra, India), house_system* (P), planet* (moon)
+  params: BIRTH, lan (en), return_year* (2024), return_lat* (19.0760), return_lon* (72.8774), return_tzone* (5.5), return_place* (Mumbai, Maharashtra, India), house_system (P), planet* (moon)
   returns: planet_return, planet_data
 
 /western-api/v1/planetary-arc-directions  [astroapi-8.divineapi.com]
   Planetary Arc Directions: The Planetary Arc Directions API returns natal planetary positions, arc-directed planetary positions, house cusps (natal and arc), and a detailed aspect table calculated using
-  params: BIRTH, planet* (Venus), progressed_day* (13), progressed_month* (06), progressed_year* (2021)
+  params: BIRTH, planet* (Venus), progressed_day* (13), progressed_month* (06), progressed_year* (2021), output_include (raw_data), hide_chart_name (NO), planet_graphic_thickness (0), sign_graphic_thickness (0)
   returns: planetary_positions, house_cusps, aspect_table
 
 /western-api/v1/planetary-ingress  [astroapi-8.divineapi.com]
   Planetary Ingress: Analyze monthly planetary sign transits using the Western Astrology Transit API, returning day-by-day sign movement for a selected planet at a given location and timezone.
-  params: api_key*, month* (11), year* (2025), place (New Delhi, India), lat* (28.7041), lon* (77.1025), tzone* (5.5), planet* (moon)
+  params: api_key*, month* (11), year* (2025), place* (New Delhi, India), lat* (28.7041), lon* (77.1025), tzone* (5.5), planet* (moon)
   returns: transit
 
 /western-api/v1/planetary-midpoints  [astroapi-8.divineapi.com]
@@ -1097,14 +1138,14 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
   params: BIRTH
   returns: [list of: planet_pair, full_degree, sign, sign_no, longitude, house]
 
-/western-api/v1/planetary-positions  [astroapi-4.divineapi.com]
-  Planetary Positions: Explore the current celestial layout with Planetary Positions, understanding the astrological influence of each planet.
-  params: BIRTH, lan (en), house_system* (P)
+/western-api/v1/planetary-positions  [astroapi-8.divineapi.com]
+  Planetary Positions: Explore the natal celestial layout with Planetary Positions: degree, sign, house, speed and retrograde flag for 18 points at the moment of birth (Ascendant, Sun to Pluto, North and South node, MC, Vertex, Chiron, Part of fortune and Lilith).
+  params: BIRTH, lan (en), house_system (P), node_type (meannode)
   returns: [list of: name, full_degree, sign, sign_no, longitude, speed, is_retro, is_rising, is_setting, in_midheaven, house, element, modality]
 
 /western-api/v1/prenatal-details  [astroapi-8.divineapi.com]
   Prenatal Details: The Prenatal Details API provides a complete prenatal chart based on the prenatal lunation (New Moon or Full Moon before birth).
-  params: BIRTH, prenatal_key* (SYZYGY_FM_P_1683327823000)
+  params: BIRTH, prenatal_key* (SYZYGY_FM_P_1683327823000), output_include (raw_data), hide_chart_name (NO), planet_graphic_thickness (0), sign_graphic_thickness (0)
   returns: planetary_positions, house_cusps, aspect_table, retun_natal_aspect
 
 /western-api/v1/prenatal-list  [astroapi-8.divineapi.com]
@@ -1119,42 +1160,42 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /western-api/v1/secondary-progressions  [astroapi-8.divineapi.com]
   Secondary Progressions: The Secondary Progressions API calculates progressed planetary positions and house cusps based on a selected progression method (e.g., Naibod).
-  params: BIRTH, planet* (Venus), progressed_day* (13), progressed_month* (06), progressed_year* (2021), progressed_hour* (12), progressed_min* (50), progressed_sec* (20), progressed_type* (ARMC1_NAIBOD)
+  params: BIRTH, planet* (Venus), progressed_day* (13), progressed_month* (06), progressed_year* (2021), progressed_hour* (12), progressed_min* (50), progressed_sec* (20), progressed_type* (ARMC1_NAIBOD), output_include (raw_data), hide_chart_name (NO), planet_graphic_thickness (0), sign_graphic_thickness (0)
   returns: progressions_date, progressed_date, progressed_type, planetary_positions, house_cusps, aspect_table
 
 /western-api/v1/synastry/conflicting-aspect-reading  [astroapi-4.divineapi.com]
   Conflicting Aspect Reading: Explore Synastry API’s Conflicting Aspect Reading for critical relationship insights, identifying challenging planetary aspects to uncover potential discord and growth areas in
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: [list of: p1, p2, orb, aspect, aspect_type, reading]
 
 /western-api/v1/synastry/contrasting-aspect-reading  [astroapi-4.divineapi.com]
   Contrasting Aspect Reading: Explore Synastry API's Contrasting Aspect Reading for insightful relationship analysis, spotlighting divergent planetary aspects to navigate and understand differences in astrological compatibility.
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: [list of: p1, p2, orb, aspect, aspect_type, reading]
 
 /western-api/v1/synastry/harmonious-aspect-reading  [astroapi-4.divineapi.com]
   Harmonious Aspect Reading: Harmonious Aspect Reading API by DivineAPI.
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: [list of: p1, p2, orb, aspect, aspect_type, reading]
 
 /western-api/v1/synastry/house-cusps  [astroapi-4.divineapi.com]
   House Cusps: Explore Synastry API's House Cusps feature for in-depth relationship analysis, calculating precise cusp positions for compatibility insights across various house systems.
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: p1_data, p2_data
 
 /western-api/v1/synastry/intense-aspect-reading  [astroapi-4.divineapi.com]
   Intense Aspect Reading: Explore Synastry API's Intense Aspect Reading for profound relationship insights, focusing on powerful planetary aspects to decode deep connections and challenges in astrological compatibility.
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: [list of: p1, p2, orb, aspect, aspect_type, reading]
 
 /western-api/v1/synastry/planetary-positions  [astroapi-4.divineapi.com]
   Planetary Position: Explore the current celestial layout with Synastry Planetary Positions, understanding the astrological influence of each planet.
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: p1_data, p2_data, synastry
 
 /western-api/v1/transit/basic  [astroapi-4.divineapi.com]
   Basic Transit: Explore our Transit API's Basic Transit feature for insights on planetary transits over natal charts, highlighting key astrological events and their potential impacts without personalized forecasts.
-  params: BIRTH, lan (en), transit_day* (10), transit_month* (02), transit_year* (2024), transit_hour* (18), transit_min* (10), transit_sec* (05), house_system* (P)
+  params: BIRTH, lan (en), transit_day* (10), transit_month* (02), transit_year* (2024), transit_hour* (18), transit_min* (10), transit_sec* (05), house_system (P)
   returns: [list of: natal_planet, transit_planet, orb, aspect]
 
 /western-api/v1/transit/custom  [astroapi-4.divineapi.com]
@@ -1164,7 +1205,7 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /western-api/v1/transit/daily  [astroapi-4.divineapi.com]
   Daily Transit: Explore our Transit API's Daily Transit feature, providing daily updates on planetary movements relative to natal charts to highlight significant astrological influences and potential daily impacts.
-  params: BIRTH, lan (en), house_system* (P)
+  params: BIRTH, lan (en), house_system (P)
   returns: date, natal_ascendant, transit_response
 
 /western-api/v1/transit/house  [astroapi-4.divineapi.com]
@@ -1179,86 +1220,86 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
 
 /western-api/v1/transit/weekly  [astroapi-4.divineapi.com]
   Weekly Transit: Explore our Transit API's Weekly Transit feature, offering weekly insights on planetary movements in relation to natal charts, spotlighting key astrological trends and their potential weekly impacts.
-  params: BIRTH, lan (en), transit_planet* (moon), house_system* (P)
+  params: BIRTH, lan (en), transit_planet* (moon), house_system (P)
   returns: start_date, end_date, natal_ascendant, transit_response
 
 /western-api/v1/transit/wheel-chart  [astroapi-8.divineapi.com]
   Wheel Chart: Generates a transit wheel chart showing current planetary transits against the natal chart, returning natal, transit, and combined wheels.
-  params: BIRTH, transit_day* (5), transit_month* (8), transit_year* (2021), transit_hour* (4), transit_min* (56), transit_sec* (45), transit_lat* (28.7041), transit_lon* (77.1025), transit_tzone* (5.5), transit_place* (New Delhi, India)
+  params: BIRTH, transit_day* (5), transit_month* (8), transit_year* (2021), transit_hour* (4), transit_min* (56), transit_sec* (45), transit_lat* (28.7041), transit_lon* (77.1025), transit_tzone* (5.5), transit_place* (New Delhi, India), no_house, hide_chart_name (NO), planet_graphic_thickness (0), sign_graphic_thickness (0)
   returns: natal, transit, natal_transit
 
 /western-api/v2/ascendant-report  [astroapi-4.divineapi.com]
   Ascendant report: This endpoint focuses on the rising sign (Ascendant) and returns interpretative text about how the native appears to the world, how they relate, and what themes color their life path.
-  params: BIRTH, lan (en), house_system* (P)
+  params: BIRTH, lan (en), house_system (P)
   returns: sign, sign_no, full_degree, longitude, image, analysis
 
 /western-api/v2/aspect-table  [astroapi-4.divineapi.com]
   Aspect Table: Examine the interplay between celestial bodies with the Aspect Table, highlighting significant astrological relationships and their impacts.
-  params: BIRTH, lan (en), house_system* (P)
+  params: BIRTH, lan (en), house_system (P)
   returns: [list of: planetOne, planetTwo, aspect, orb]
 
 /western-api/v2/general-house-report/sun  [astroapi-4.divineapi.com]
   General House Report: This endpoint is part of the Western Astrology flow and is useful for presenting house-wise narrative reports to users. The planet is the final path segment (shown here as sun); valid values: sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune, pluto, chiron, northnode, southnode, mc. Note: the lunar nodes work only as the single words northnode and southnode (north_node, rahu and ketu are rejected), and ascendant is not supported by this endpoint.
-  params: BIRTH, lan (en), house_system* (P)
+  params: BIRTH, lan (en), house_system (P)
   returns: planet_name, house, report
 
 /western-api/v2/general-sign-report/sun  [astroapi-4.divineapi.com]
   General Sign Report: Discover the essence of your astrological identity with the General Sign Report API, providing personalized insights into a planet’s sign placement (Sun, Moon, Mercury, etc.) and The planet is the final path segment (shown here as sun) and is case-insensitive; valid values: sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune, pluto, chiron, northnode, southnode, mc.
-  params: BIRTH, lan (en), house_system* (P)
+  params: BIRTH, lan (en), house_system (P)
   returns: planet_name, sign_name, report
 
 /western-api/v2/moon-phases  [astroapi-4.divineapi.com]
   Moon Phases: This API determines an individual’s Moon phase at birth and provides interpretative content relevant to that phase.
-  params: BIRTH, lan (en), house_system* (P)
+  params: BIRTH, lan (en), house_system (P)
   returns: phase_no, phase_name, phase_degree, natal_moon, content
 
 /western-api/v2/natal-wheel-chart  [astroapi-8.divineapi.com]
   Natal Wheel Chart: This endpoint generates an astrology wheel (SVG/base64) showing planetary placements, houses, and zodiac positions based on birth data.
-  params: BIRTH, lan (en), show_symbol* (0), house_system* (P), wheel_lines* (#7c7c7c), wheel_color* (#000), text_color* (#000), outter_background* (#fff), wheel_background* (#fff)
+  params: BIRTH, lan (en), show_symbol* (0), house_system (P), wheel_lines* (#7c7c7c), wheel_color* (#000), text_color* (#000), outter_background* (#fff), wheel_background* (#fff), no_house (0), planet_graphic_thickness (0), sign_graphic_thickness (0)
   returns: svg, base64_image
 
 /western-api/v2/synastry/aspect-table  [astroapi-8.divineapi.com]
   Aspect Table: Explore Synastry API's Aspect Table feature for nuanced relationship insights, detailing precise planetary aspects and angles to illuminate compatibility through in-depth astrological analysis.
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: p1_p2_aspect, p2_p1_aspect
 
 /western-api/v2/synastry/emotional-compatibility  [astroapi-4.divineapi.com]
   Emotional Compatibility: Delve into emotional bonds with Synastry API, exploring the planetary influences on emotional understanding and empathy.
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: content, message
 
 /western-api/v2/synastry/financial-compatibility  [astroapi-4.divineapi.com]
   Financial Compatibility: Investigate financial synergy through Synastry API, assessing astrological influences on financial attitudes and cooperation.
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: content, message
 
 /western-api/v2/synastry/natal-wheel-chart  [astroapi-8.divineapi.com]
   Natal Wheel Chart: Explore Synastry API's Natal Wheel Chart feature for advanced relationship insights, offering detailed representations of planetary placements and aspects to enhance compatibility
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P), p1_no_house, p2_no_house, hide_chart_name (NO), planet_graphic_thickness (0), sign_graphic_thickness (0)
   returns: p1, p2
 
 /western-api/v2/synastry/physical-compatibility  [astroapi-4.divineapi.com]
   Physical Compatibility: Analyze physical harmony through Synastry API, revealing the astrological aspects that influence physical attraction and energy dynamics.
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: content, message
 
 /western-api/v2/synastry/sexual-compatibility  [astroapi-4.divineapi.com]
   Sexual Compatibility: Discover sexual alignment using Synastry API, highlighting the astrological factors affecting sexual attraction and fulfillment.
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: content, message
 
 /western-api/v2/synastry/spiritual-compatibility  [astroapi-4.divineapi.com]
   Spiritual Compatibility: Examine spiritual connections with Synastry API, focusing on the planetary aspects that shape spiritual unity and growth
-  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system* (P)
+  params: api_key*, P1_BIRTH, P2_BIRTH, lan (en), house_system (P)
   returns: content, message
 
 /western-api/v2/transit/monthly  [astroapi-8.divineapi.com]
   Monthly Transit: Explore our Transit API's Monthly Transit feature, delivering monthly analyses of planetary movements against natal charts, identifying major astrological patterns and their potential monthly impacts.
-  params: BIRTH, transit_month* (10), transit_year* (2025), transit_lat* (25.321684), transit_lon* (82.987289), transit_tzone* (5.5), transit_place* (New Delhi), transit_planet* (moon), aspect_orbs_type (Fixed), aspect_orbs_value (530), aspects_type* (ALL)
+  params: BIRTH, transit_month* (10), transit_year* (2025), transit_lat* (25.321684), transit_lon* (82.987289), transit_tzone* (5.5), transit_place* (New Delhi), transit_planet* (moon), aspect_orbs_type (FIXED), aspect_orbs_value (5_30), aspects_type (ALL)
   returns: transit
 
 
-## Numerology APIs (15 endpoints)
+## Numerology APIs (17 endpoints)
 
 /numerology/v1/analyze-mobile-number  [astroapi-7.divineapi.com]
   Analyze Mobile Number: The Analyze Mobile Number API evaluates a given mobile number using numerology principles, along with basic identity inputs, to provide structured number-based insights.
@@ -1269,6 +1310,11 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
   Birthday Number: The Birthday Number API provides numerological insights based on an individual's birth date.
   params: api_key*, day* (24), month* (05), year* (2023), fname* (Rahul), lname* (kumar), lan (en)
   returns: single_digit, double_digit
+
+/numerology/v1/business-name-correction  [astroapi-7.divineapi.com]
+  Business Name Correction: The Business Name Correction API analyses a business name against the owner's full name and date of birth and recommends better-aligned spellings. It returns the business name number, the owner's name, life path and birthday numbers, a business name alignment percentage, the target business name number, whether the business name is already aligned, and a list of suggested corrected business name spellings that reach the target number. Response text is English only (no lan parameter).
+  params: api_key*, day* (24), month* (08), year* (1990), full_name* (Rahul Kumar), business_name* (abc.com)
+  returns: business_name_number, name_number, life_path_number, birthday_number, business_name_alignment_percentage, target_business_name_number, is_already_aligned, suggested_business_names, content
 
 /numerology/v1/core-numbers  [astroapi-4.divineapi.com]
   Core Numbers: This API returns structured numerology insights such as Life Path, Destiny, Personal Year, Pinnacles, Challenges, and more, making it ideal for astrology/numerology apps
@@ -1299,6 +1345,11 @@ COMMON TASKS (what do I call for...?  ->  endpoint; open that card for params + 
   Missing Numbers: The Missing Numbers API analyzes absent numbers in a numerology chart, uncovering personality traits and challenges.
   params: api_key*, day* (24), month* (05), year* (2023), fname* (Rahul), lname* (kumar), lan (en)
   returns: [list of: number, result]
+
+/numerology/v1/name-correction  [astroapi-7.divineapi.com]
+  Name Correction: The Name Correction API analyses a person's full name against their birth energy and recommends better-aligned spellings. It returns the current name number, life path and birthday numbers, an alignment percentage, the target name number, whether the name is already aligned, and a list of suggested corrected spellings that reach the target number. Supports lan=en (default) and lan=hi.
+  params: api_key*, day* (24), month* (05), year* (2023), full_name* (Rahul Kumar), lan (en)
+  returns: name_number, life_path_number, birthday_number, name_alignment_percentage, target_name_number, is_already_aligned, suggested_names, content
 
 /numerology/v1/name-number  [astroapi-7.divineapi.com]
   Name Number: The Name Number API provides insightful numerological analysis by decoding both single and double-digit name numbers.
